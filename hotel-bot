@@ -1,0 +1,151 @@
+import discord
+from discord.ext import commands, tasks
+import asyncio
+from datetime import datetime, timedelta
+
+# -----------------------
+# 1. Bot setup
+# -----------------------
+intents = discord.Intents.default()
+intents.messages = True
+intents.reactions = True
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# -----------------------
+# 2. Csatorna ID-k (példa)
+# -----------------------
+TEAM_CHANNELS = {
+    "A": 1454211417686147233,
+    "B": 1454211434413166754,
+    "C": 1454211451077132541,
+    "D": 1454211465316929546,
+    "E": 1454211483499102299
+}
+
+ADMIN_OVERVIEW_CHANNEL = 1454211089813475439
+CLEANING_PLANNER_CHANNEL = 1454211131429355767
+
+# -----------------------
+# 3. Szobák és státuszok
+# -----------------------
+ROOMS = ["1/1", "1/2", "1/3", "1/4"]
+
+# Példa státusz: 'empty', 'occupied', 'cleaning', 'urgent', 'maintenance'
+room_status = {room: 'empty' for room in ROOMS}
+
+# -----------------------
+# 4. Foglalások
+# -----------------------
+BOOKINGS = [
+    {"room": "1/4", "guests": 3, "check_in": "2025-12-26", "check_out": "2025-12-28"},
+    {"room": "1/1", "guests": 2, "check_in": "2025-12-27", "check_out": "2025-12-29"},
+]
+
+# -----------------------
+# 5. Emoji mapping
+# -----------------------
+STATUS_EMOJI = {
+    "empty": "🗑️",
+    "occupied": "🏨",
+    "cleaning": "✅",
+    "urgent": "❗",
+    "maintenance": "🔨"
+}
+
+TEAM_EMOJI = ["🇦", "🇧", "🇨", "🇩", "🇪"]
+
+# -----------------------
+# 6. Admin overview frissítése
+# -----------------------
+async def update_admin_overview():
+    channel = bot.get_channel(ADMIN_OVERVIEW_CHANNEL)
+    # Törlés az előző embedekből
+    async for message in channel.history(limit=100):
+        if message.author == bot.user and message.embeds:
+            await message.delete()
+
+    # Új embed létrehozása
+    embed = discord.Embed(title="Admin Overview – Szoba Státuszok", color=discord.Color.green())
+    for room, status in room_status.items():
+        embed.add_field(name=room, value=STATUS_EMOJI[status], inline=True)
+
+    await channel.send(embed=embed)
+
+# -----------------------
+# 7. Cleaning Planner előkészítése
+# -----------------------
+async def prepare_cleaning_plan():
+    channel = bot.get_channel(CLEANING_PLANNER_CHANNEL)
+    # Napi embed létrehozása a következő 1-3 napra
+    today = datetime.now().date()
+    for days_ahead in range(1, 4):
+        target_date = today + timedelta(days=days_ahead)
+        embed = discord.Embed(
+            title=f"Takarítási terv – {target_date}",
+            description="",
+            color=discord.Color.blue()
+        )
+        for booking in BOOKINGS:
+            check_in = datetime.strptime(booking["check_in"], "%Y-%m-%d").date()
+            check_out = datetime.strptime(booking["check_out"], "%Y-%m-%d").date()
+            room = booking["room"]
+
+            # Ha a szoba érintett a target napon
+            if check_in <= target_date <= check_out:
+                # Döntés státuszra
+                if check_in == target_date and check_out == target_date:
+                    status = "urgent"
+                elif check_out == target_date:
+                    status = "urgent"
+                elif check_in <= target_date < check_out:
+                    status = "occupied"
+                else:
+                    status = "empty"
+
+                embed.description += f"{room} {STATUS_EMOJI[status]}\nCsapat kiosztás: {' '.join(TEAM_EMOJI)}\n"
+
+        await channel.send(embed=embed)
+
+# -----------------------
+# 8. Napi törlés és küldés scheduler
+# -----------------------
+@tasks.loop(minutes=1)
+async def daily_scheduler():
+    now = datetime.now()
+    # 19:59 törlés
+    if now.hour == 19 and now.minute == 59:
+        # Csapat csatornák törlése
+        for channel_id in TEAM_CHANNELS.values():
+            channel = bot.get_channel(channel_id)
+            async for message in channel.history(limit=100):
+                if message.author == bot.user and message.embeds:
+                    await message.delete()
+        # Admin és planner csatorna törlés
+        await update_admin_overview()
+    # 20:00 új napi embed kiküldés
+    if now.hour == 20 and now.minute == 0:
+        await prepare_cleaning_plan()
+
+@daily_scheduler.before_loop
+async def before_scheduler():
+    await bot.wait_until_ready()
+
+daily_scheduler.start()
+
+# -----------------------
+# 9. Emoji reakció kezelése (csapat kiosztás)
+# -----------------------
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot:
+        return
+    if str(reaction.emoji) in TEAM_EMOJI:
+        await reaction.message.channel.send(f"{user.display_name} vállalta a feladatot: {reaction.message.embeds[0].title}")
+
+# -----------------------
+# 10. Bot indítása
+# -----------------------
+bot.run("1454215022916927550")
